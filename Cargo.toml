@@ -1,0 +1,34 @@
+[package]
+name = "async-html-rewriter"
+version = "0.1.0"
+edition = "2021"
+authors = ["Patrice Billaut <billaut@proton.me>"]
+description = "Asynchronous HTML rewriting library."
+repository = "https://github.com/pbillaut/async-html-rewriter-rs"
+license = "MIT"
+keywords = ["async", "html", "rewriting", "streaming"]
+categories = ["network-programming", "web-programming", "web-programming::http-server"]
+
+[dependencies]
+atomic-waker = "1.1"
+bytes = "1.7"
+crossbeam-queue = "0.3"
+futures-core = "0.3"
+http-body = "1.0"
+lol_html = "1.2"
+pin-project-lite = "0.2"
+tokio = { version = "1.40" }
+tokio-stream = "0.1"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["async", "async_tokio"] }
+tokio = { version = "1.40", features = ["macros", "io-util"] }
+tokio-test = "0.4"
+
+[features]
+bench = ["tokio/rt-multi-thread"]
+
+[[bench]]
+name = "bench_main"
+harness = false
+required-features = ["bench"]
