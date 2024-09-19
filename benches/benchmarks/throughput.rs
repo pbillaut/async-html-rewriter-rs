@@ -13,7 +13,7 @@ async fn rewrite(source: Mock, settings: Settings<'static, 'static>) {
     let local_set = task::LocalSet::new();
     local_set.run_until(async move {
         let rwr = Rewriter::new(source, settings);
-        let mut stream = rwr.output_stream();
+        let mut stream = rwr.output_reader();
         let rewriter_handle = task::spawn_local(rwr);
         let mut buf = String::new();
         stream.read_to_string(&mut buf).await.unwrap();
