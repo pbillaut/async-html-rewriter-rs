@@ -128,9 +128,9 @@ mod tests {
         })];
         settings.buffer_size = 1024;
 
-        let writer = Rewriter::new(source, settings);
-        let mut reader = writer.output_reader();
-        writer.await.unwrap();
+        let rewriter = Rewriter::new(source, settings);
+        let mut reader = rewriter.output_reader();
+        rewriter.await.unwrap();
 
         let mut output = String::new();
         let bytes_read = reader.read_to_string(&mut output).await;
