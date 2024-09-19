@@ -1,5 +1,7 @@
+use crate::reader::ByteReader;
 use crate::settings::Settings;
 use crate::sink::RelaySink;
+#[cfg(feature = "hyper")]
 use crate::stream::ByteStream;
 use crate::ByteQueue;
 use atomic_waker::AtomicWaker;
@@ -52,6 +54,11 @@ where
         }
     }
 
+    pub fn output_reader(&self) -> ByteReader {
+        ByteReader::new(self.queue.clone(), self.waker.clone(), self.done.clone())
+    }
+
+    #[cfg(feature = "hyper")]
     pub fn output_stream(&self) -> ByteStream {
         ByteStream::new(self.queue.clone(), self.waker.clone(), self.done.clone())
     }
@@ -105,7 +112,7 @@ mod tests {
     use crate::settings::Settings;
     use lol_html::element;
     use lol_html::html_content::ContentType;
-    use tokio_stream::StreamExt;
+    use tokio::io::AsyncReadExt;
 
     #[tokio::test]
     async fn rewrite_html() {
@@ -121,23 +128,15 @@ mod tests {
         })];
         settings.buffer_size = 1024;
 
-        let writer = Rewriter::new(source, settings);
-        let stream = writer.output_stream();
-        writer.await.unwrap();
+        let rewriter = Rewriter::new(source, settings);
+        let mut reader = rewriter.output_reader();
+        rewriter.await.unwrap();
 
-        let output: Vec<String> = stream
-            .map(|frame| frame
-                .expect("Expected stream to contain valid frames")
-                .into_data()
-                .expect("Expected frames to hold valid data")
-            )
-            .map(|bytes|
-                std::str::from_utf8(&bytes)
-                    .expect("Expected frame data to be valid utf8")
-                    .to_string()
-            )
-            .collect().await;
+        let mut output = String::new();
+        let bytes_read = reader.read_to_string(&mut output).await;
 
-        assert_eq!(output.join(""), expected);
+        assert!(bytes_read.is_ok());
+        assert_eq!(bytes_read.unwrap(), output.len());
+        assert_eq!(output, expected);
     }
 }

@@ -21,12 +21,13 @@ async fn rewrite_html() {
     let local_set = task::LocalSet::new();
     let buffer = local_set.run_until(async move {
         let rewriter = Rewriter::new(source, settings);
-        let mut stream = rewriter.output_stream();
+        let mut stream = rewriter.output_reader();
 
         let rewriter_handle = task::spawn_local(rewriter);
 
         let mut buf = String::new();
         stream.read_to_string(&mut buf).await.unwrap();
+        
         let _ = rewriter_handle.await.unwrap();
         buf
     }).await;

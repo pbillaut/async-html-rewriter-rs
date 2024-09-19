@@ -1,14 +1,15 @@
+#![cfg(feature = "hyper")]
 use crate::ByteQueue;
 use atomic_waker::AtomicWaker;
 use bytes::Bytes;
-use futures_core::stream::Stream;
-use http_body::Frame;
-use std::io::{Error, ErrorKind};
+use futures_core::{ready, stream::Stream};
+use http_body::{Body, Frame};
+use std::io;
+use std::io::ErrorKind;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use tokio::io::{AsyncRead, ReadBuf};
 
 pub struct ByteStream {
     queue: Arc<ByteQueue>,
@@ -23,7 +24,7 @@ impl ByteStream {
 }
 
 impl Stream for ByteStream {
-    type Item = Result<Frame<Bytes>, std::io::Error>;
+    type Item = Result<Frame<Bytes>, io::Error>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if !self.queue.is_empty() {
@@ -31,7 +32,7 @@ impl Stream for ByteStream {
                 let frame = Frame::data(bytes);
                 Poll::Ready(Some(Ok(frame)))
             } else {
-                let err = Error::new(ErrorKind::Other, "data queue is empty");
+                let err = io::Error::new(ErrorKind::Other, "data queue is empty");
                 Poll::Ready(Some(Err(err)))
             }
         } else if self.done.load(Ordering::SeqCst) {
@@ -43,63 +44,40 @@ impl Stream for ByteStream {
     }
 }
 
-impl AsyncRead for ByteStream {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut Context,
-        buf: &mut ReadBuf,
-    ) -> Poll<std::io::Result<()>> {
-        if !self.queue.is_empty() {
-            if let Some(bytes) = self.queue.pop() {
-                buf.put_slice(&bytes);
-                Poll::Ready(Ok(()))
-            } else {
-                let err = Error::new(ErrorKind::Other, "data queue is empty");
-                Poll::Ready(Err(err))
-            }
-        } else if self.done.load(Ordering::SeqCst) {
-            Poll::Ready(Ok(()))
-        } else {
-            self.waker.register(cx.waker());
-            Poll::Pending
+impl Body for ByteStream {
+    type Data = Bytes;
+    type Error = io::Error;
+
+    fn poll_frame(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        match ready!(self.poll_next(cx)) {
+            None => Poll::Ready(None),
+            Some(frame) => Poll::Ready(Some(frame)),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use tokio::io::AsyncReadExt;
+    use super::ByteStream;
+    use crate::ByteQueue;
+    use atomic_waker::AtomicWaker;
+    use bytes::Bytes;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
     use tokio_stream::StreamExt;
-
-    fn test_instance(input: &'static str) -> ByteStream {
-        let queue = ByteQueue::new();
-        queue.push(Bytes::from(input));
-
-        ByteStream::new(
-            Arc::new(queue),
-            Arc::new(AtomicWaker::new()),
-            Arc::new(AtomicBool::new(true)),
-        )
-    }
-
-    #[tokio::test]
-    async fn async_read_impl() {
-        let input = "ABC";
-        let mut reader = test_instance(input);
-
-        let mut output = String::new();
-        let bytes_read = reader.read_to_string(&mut output).await;
-
-        assert!(bytes_read.is_ok());
-        assert_eq!(bytes_read.unwrap(), output.len());
-        assert_eq!(output, input);
-    }
 
     #[tokio::test]
     async fn stream_impl() {
         let input = "ABC";
-        let stream = test_instance(input);
+
+        let queue = ByteQueue::new();
+        queue.push(Bytes::from(input));
+
+        let stream = ByteStream::new(
+            Arc::new(queue),
+            Arc::new(AtomicWaker::new()),
+            Arc::new(AtomicBool::new(true)),
+        );
 
         let output: Vec<String> = stream
             .map(|frame| frame
