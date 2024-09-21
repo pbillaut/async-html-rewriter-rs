@@ -18,6 +18,10 @@ use tokio_stream::StreamExt;
 pub enum RewriterError {
     #[error("rewriting error: {0}")]
     RewritingError(#[from] lol_html::errors::RewritingError),
+
+    #[cfg(feature = "hyper")]
+    #[error("hyper error: {0}")]
+    HyperError(#[from] hyper::Error),
 }
 
 pub type RewriterResult<T> = Result<T, RewriterError>;
@@ -64,11 +68,6 @@ impl<'a> Rewriter<'a> {
         ByteReader::new(self.queue.clone(), self.waker.clone(), self.done.clone())
     }
 
-    #[cfg(feature = "hyper")]
-    pub fn output_stream(&self) -> ByteStream {
-        ByteStream::new(self.queue.clone(), self.waker.clone(), self.done.clone())
-    }
-
     pub async fn rewrite<S, I>(mut self, stream: &mut S) -> RewriterResult<()>
     where
         S: Stream<Item=I> + Unpin,
@@ -92,6 +91,29 @@ impl<'a> Drop for Rewriter<'a> {
         if let Some(rewriter) = self.rewriter.take() {
             let _ = rewriter.end();
         }
+    }
+}
+
+#[cfg(feature = "hyper")]
+impl<'a> Rewriter<'a> {
+    pub fn output_stream(&self) -> ByteStream {
+        ByteStream::new(self.queue.clone(), self.waker.clone(), self.done.clone())
+    }
+
+    pub async fn rewrite_body<S, I>(mut self, stream: &mut S) -> RewriterResult<()>
+    where
+        S: Stream<Item=hyper::Result<I>> + Unpin,
+        I: AsRef<[u8]>,
+    {
+        match &mut self.rewriter {
+            None => unreachable!("The writer should only ever be None when drop has been called"),
+            Some(rewriter) => {
+                while let Some(item) = stream.next().await {
+                    rewriter.write(item?.as_ref())?;
+                }
+            }
+        }
+        Ok(())
     }
 }
 
