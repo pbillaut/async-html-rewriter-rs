@@ -11,20 +11,20 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-pub struct ByteStream {
+pub struct FrameStream {
     queue: Arc<ByteQueue>,
     waker: Arc<AtomicWaker>,
     done: Arc<AtomicBool>,
 }
 
-impl ByteStream {
+impl FrameStream {
     pub fn new(queue: Arc<ByteQueue>, waker: Arc<AtomicWaker>, done: Arc<AtomicBool>) -> Self {
         Self { queue, waker, done }
     }
 }
 
-impl Stream for ByteStream {
-    type Item = Result<Frame<Bytes>, io::Error>;
+impl Stream for FrameStream {
+    type Item = io::Result<Frame<Bytes>>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if !self.queue.is_empty() {
@@ -44,7 +44,7 @@ impl Stream for ByteStream {
     }
 }
 
-impl Body for ByteStream {
+impl Body for FrameStream {
     type Data = Bytes;
     type Error = io::Error;
 
@@ -58,7 +58,7 @@ impl Body for ByteStream {
 
 #[cfg(test)]
 mod tests {
-    use super::ByteStream;
+    use super::FrameStream;
     use crate::ByteQueue;
     use atomic_waker::AtomicWaker;
     use bytes::Bytes;
@@ -73,7 +73,7 @@ mod tests {
         let queue = ByteQueue::new();
         queue.push(Bytes::from(input));
 
-        let stream = ByteStream::new(
+        let stream = FrameStream::new(
             Arc::new(queue),
             Arc::new(AtomicWaker::new()),
             Arc::new(AtomicBool::new(true)),

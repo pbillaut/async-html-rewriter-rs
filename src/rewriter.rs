@@ -2,7 +2,7 @@ use crate::reader::ByteReader;
 use crate::settings::Settings;
 use crate::sink::RelaySink;
 #[cfg(feature = "hyper")]
-use crate::stream::ByteStream;
+use crate::stream::FrameStream;
 use crate::ByteQueue;
 use atomic_waker::AtomicWaker;
 use futures_core::Stream;
@@ -96,8 +96,8 @@ impl<'a> Drop for Rewriter<'a> {
 
 #[cfg(feature = "hyper")]
 impl<'a> Rewriter<'a> {
-    pub fn output_stream(&self) -> ByteStream {
-        ByteStream::new(self.queue.clone(), self.waker.clone(), self.done.clone())
+    pub fn output_stream(&self) -> FrameStream {
+        FrameStream::new(self.queue.clone(), self.waker.clone(), self.done.clone())
     }
 
     pub async fn rewrite_body<S, I>(mut self, stream: &mut S) -> RewriterResult<()>
