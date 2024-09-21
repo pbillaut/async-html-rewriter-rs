@@ -4,6 +4,7 @@ use lol_html::element;
 use lol_html::html_content::ContentType;
 use tokio::io::AsyncReadExt;
 use tokio::task;
+use tokio_test::stream_mock::StreamMockBuilder;
 
 #[tokio::test]
 async fn rewrite_html() {
@@ -14,8 +15,8 @@ async fn rewrite_html() {
             el.replace(expected, ContentType::Html);
             Ok(())
     })];
-    let source = tokio_test::io::Builder::new()
-        .read(b"<h1>Test</h1>")
+    let source = StreamMockBuilder::new()
+        .next(b"<h1>Test</h1>")
         .build();
 
     let local_set = task::LocalSet::new();
@@ -27,7 +28,7 @@ async fn rewrite_html() {
 
         let mut buf = String::new();
         stream.read_to_string(&mut buf).await.unwrap();
-        
+
         let _ = rewriter_handle.await.unwrap();
         buf
     }).await;

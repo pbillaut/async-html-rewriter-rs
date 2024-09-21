@@ -2,7 +2,6 @@ use std::ops::{Deref, DerefMut};
 
 pub struct Settings<'h, 's> {
     settings: lol_html::Settings<'h, 's>,
-    pub buffer_size: usize,
 }
 
 impl<'h, 's> Default for Settings<'h, 's> {
@@ -13,7 +12,7 @@ impl<'h, 's> Default for Settings<'h, 's> {
 
 impl<'h, 's> Settings<'h, 's> {
     pub fn new() -> Self {
-        Self { settings: lol_html::Settings::default(), buffer_size: 4096 }
+        Self { settings: lol_html::Settings::default() }
     }
 
     pub fn into_inner(self) -> lol_html::Settings<'h, 's> {

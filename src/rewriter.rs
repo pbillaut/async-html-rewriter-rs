@@ -5,38 +5,37 @@ use crate::sink::RelaySink;
 use crate::stream::ByteStream;
 use crate::ByteQueue;
 use atomic_waker::AtomicWaker;
-use futures_core::ready;
+use futures_core::{ready, Stream};
 use pin_project_lite::pin_project;
-use std::io::{Error, ErrorKind};
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
 use std::{
     fmt::Debug,
     future::Future,
     io,
     pin::Pin,
+    sync::atomic::AtomicBool,
+    sync::Arc,
     task::{Context, Poll},
 };
-use tokio::io::{AsyncRead, ReadBuf};
 
 pin_project! {
     #[derive(Debug)]
-    pub struct Rewriter<'a, S>
+    pub struct Rewriter<'a, S, I>
     where
-        S:AsyncRead
+        S: Stream<Item=I>,
+        I: AsRef<[u8]>,
     {
         #[pin] source: S,
         rewriter: Option<lol_html::HtmlRewriter<'a, RelaySink >>,
-        buffer: Vec<u8>,
         waker: Arc<AtomicWaker>,
         done: Arc<AtomicBool>,
         queue: Arc<ByteQueue>,
     }
 }
 
-impl<'a, S> Rewriter<'a, S>
+impl<'a, S, I> Rewriter<'a, S, I>
 where
-    S: AsyncRead,
+    S: Stream<Item=I>,
+    I: AsRef<[u8]>,
 {
     pub fn new(source: S, settings: Settings<'a, '_>) -> Self {
         let waker = Arc::new(AtomicWaker::new());
@@ -49,7 +48,23 @@ where
             waker,
             done,
             source,
-            buffer: vec![0; settings.buffer_size],
+            rewriter: Some(lol_html::HtmlRewriter::new(settings.into_inner(), sink)),
+        }
+    }
+
+    pub fn with_queue(
+        source: S,
+        settings: Settings<'a, '_>,
+        queue: Arc<ByteQueue>,
+        waker: Arc<AtomicWaker>,
+        done: Arc<AtomicBool>,
+    ) -> Self {
+        let sink = RelaySink::new(queue.clone(), waker.clone(), done.clone());
+        Self {
+            queue,
+            waker,
+            done,
+            source,
             rewriter: Some(lol_html::HtmlRewriter::new(settings.into_inner(), sink)),
         }
     }
@@ -64,43 +79,37 @@ where
     }
 }
 
-
-impl<S> Future for Rewriter<'_, S>
+impl<S, I> Future for Rewriter<'_, S, I>
 where
-    S: AsyncRead,
+    S: Stream<Item=I>,
+    I: AsRef<[u8]>,
 {
     type Output = io::Result<()>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut this = self.project();
-        let mut buffer = ReadBuf::new(this.buffer);
-        let mut last_buffer_index = 0;
-        loop {
-            match this.rewriter {
-                Some(rewriter) => match ready!(this.source.as_mut().poll_read(cx, &mut buffer)) {
-                    Ok(()) => {
-                        let source_is_exhausted = last_buffer_index == buffer.filled().len();
-                        if source_is_exhausted {
-                            // Best effort trying to immediately release rewriter resources
-                            if let Some(rewriter) = this.rewriter.take() {
-                                rewriter.end().unwrap_or_else(|err|
-                                    eprintln!("unable to release html rewriter resources: {:?}", err)
-                                )
-                            }
-                            return Poll::Ready(Ok(()));
-                        } else {
-                            let data = &buffer.filled()[last_buffer_index..];
-                            if let Err(err) = rewriter.write(data) {
-                                return Poll::Ready(Err(Error::new(ErrorKind::Other, err)));
-                            }
-                            last_buffer_index = buffer.filled().len();
+        match this.rewriter {
+            None => {
+                // This should be unreachable, since awaiting this future consumes this object
+                let err = io::Error::new(io::ErrorKind::UnexpectedEof, "Writer has been closed");
+                Poll::Ready(Err(err))
+            }
+            Some(rewriter) => loop {
+                match ready!(this.source.as_mut().poll_next(cx)) {
+                    Some(item) => {
+                        if let Err(err) = rewriter.write(item.as_ref()) {
+                            return Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, err)));
                         }
                     }
-                    Err(err) => {
-                        return Poll::Ready(Err(Error::new(ErrorKind::Other, err)))
+                    None => {
+                        // Best effort trying to immediately release rewriter resources
+                        if let Some(rewriter) = this.rewriter.take() {
+                            // We're ignoring failed attempts
+                            let _ = rewriter.end();
+                        }
+                        return Poll::Ready(Ok(()));
                     }
-                },
-                None => return Poll::Ready(Ok(())),
+                }
             }
         }
     }
@@ -113,12 +122,13 @@ mod tests {
     use lol_html::element;
     use lol_html::html_content::ContentType;
     use tokio::io::AsyncReadExt;
+    use tokio_test::stream_mock::StreamMockBuilder;
 
     #[tokio::test]
     async fn rewrite_html() {
         let expected = "<h1>Succeeded</h1>";
-        let source = tokio_test::io::Builder::new()
-            .read(b"<h1>Test</h1>")
+        let source = StreamMockBuilder::new()
+            .next(b"<h1>Test</h1>")
             .build();
 
         let mut settings = Settings::new();
@@ -126,7 +136,6 @@ mod tests {
                 el.replace(expected, ContentType::Html);
                 Ok(())
         })];
-        settings.buffer_size = 1024;
 
         let rewriter = Rewriter::new(source, settings);
         let mut reader = rewriter.output_reader();
