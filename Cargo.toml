@@ -16,6 +16,7 @@ crossbeam-queue = "0.3"
 futures-core = "0.3"
 lol_html = "1.2"
 pin-project-lite = "0.2"
+thiserror = "1.0"
 tokio = { version = "1.40" }
 tokio-stream = "0.1"
 

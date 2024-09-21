@@ -32,6 +32,14 @@ impl OutputSink for RelaySink {
     }
 }
 
+impl Drop for RelaySink {
+    fn drop(&mut self) {
+        self.done.store(true, Ordering::SeqCst);
+        // Inform everybody that's waiting for us that we're done with producing data
+        self.waker.wake();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::RelaySink;
