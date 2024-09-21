@@ -69,10 +69,10 @@ impl<'a> Rewriter<'a> {
         ByteStream::new(self.queue.clone(), self.waker.clone(), self.done.clone())
     }
 
-    pub async fn rewrite<T, P>(mut self, stream: &mut T) -> RewriterResult<()>
+    pub async fn rewrite<S, I>(mut self, stream: &mut S) -> RewriterResult<()>
     where
-        T: Stream<Item=P> + Unpin,
-        P: AsRef<[u8]>,
+        S: Stream<Item=I> + Unpin,
+        I: AsRef<[u8]>,
     {
         match &mut self.rewriter {
             None => unreachable!("The writer should only ever be None when drop has been called"),
