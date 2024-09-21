@@ -1,43 +1,38 @@
-use crate::ByteQueue;
-use atomic_waker::AtomicWaker;
-use std::io;
+use crate::context::Context;
 use std::io::ErrorKind;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::task::{Context, Poll};
+use std::task::Poll;
+use std::{io, task};
 use tokio::io::{AsyncRead, ReadBuf};
 
 pub struct ByteReader {
-    queue: Arc<ByteQueue>,
-    waker: Arc<AtomicWaker>,
-    done: Arc<AtomicBool>,
+    context: Context,
 }
 
 impl ByteReader {
-    pub fn new(queue: Arc<ByteQueue>, waker: Arc<AtomicWaker>, done: Arc<AtomicBool>) -> Self {
-        Self { queue, waker, done }
+    pub fn new(context: Context) -> Self {
+        Self { context }
     }
 }
 
 impl AsyncRead for ByteReader {
     fn poll_read(
         self: Pin<&mut Self>,
-        cx: &mut Context,
+        cx: &mut task::Context,
         buf: &mut ReadBuf,
     ) -> Poll<io::Result<()>> {
-        if !self.queue.is_empty() {
-            if let Some(bytes) = self.queue.pop() {
+        if !self.context.queue().is_empty() {
+            if let Some(bytes) = self.context.queue().pop() {
                 buf.put_slice(&bytes);
                 Poll::Ready(Ok(()))
             } else {
                 let err = io::Error::new(ErrorKind::Other, "data queue is empty");
                 Poll::Ready(Err(err))
             }
-        } else if self.done.load(Ordering::SeqCst) {
+        } else if self.context.is_done() {
             Poll::Ready(Ok(()))
         } else {
-            self.waker.register(cx.waker());
+            self.context.register_waker(cx.waker());
             Poll::Pending
         }
     }
@@ -45,8 +40,12 @@ impl AsyncRead for ByteReader {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::context::Context;
+    use crate::reader::ByteReader;
+    use crate::ByteQueue;
+    use atomic_waker::AtomicWaker;
     use bytes::Bytes;
+    use std::sync::atomic::AtomicBool;
     use tokio::io::AsyncReadExt;
 
     #[tokio::test]
@@ -56,11 +55,11 @@ mod tests {
         let queue = ByteQueue::new();
         queue.push(Bytes::from(input));
 
-        let mut reader = ByteReader::new(
-            Arc::new(queue),
-            Arc::new(AtomicWaker::new()),
-            Arc::new(AtomicBool::new(true)),
-        );
+        let mut reader = ByteReader::new(Context::new(
+            queue,
+            AtomicWaker::default(),
+            AtomicBool::new(true),
+        ));
 
         let mut output = String::new();
         let bytes_read = reader.read_to_string(&mut output).await;

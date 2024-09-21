@@ -1,16 +1,11 @@
+use crate::context::Context;
 use crate::reader::ByteReader;
 use crate::settings::Settings;
 use crate::sink::RelaySink;
 #[cfg(feature = "hyper")]
-use crate::stream::ByteStream;
-use crate::ByteQueue;
-use atomic_waker::AtomicWaker;
+use crate::stream::FrameStream;
 use futures_core::Stream;
-use std::{
-    fmt::Debug,
-    sync::atomic::AtomicBool,
-    sync::Arc,
-};
+use std::fmt::Debug;
 use thiserror::Error;
 use tokio_stream::StreamExt;
 
@@ -18,55 +13,38 @@ use tokio_stream::StreamExt;
 pub enum RewriterError {
     #[error("rewriting error: {0}")]
     RewritingError(#[from] lol_html::errors::RewritingError),
+
+    #[cfg(feature = "hyper")]
+    #[error("hyper error: {0}")]
+    HyperError(#[from] hyper::Error),
 }
 
 pub type RewriterResult<T> = Result<T, RewriterError>;
 
 #[derive(Debug)]
 pub struct Rewriter<'a> {
+    context: Context,
     rewriter: Option<lol_html::HtmlRewriter<'a, RelaySink>>,
-    waker: Arc<AtomicWaker>,
-    done: Arc<AtomicBool>,
-    queue: Arc<ByteQueue>,
 }
 
 impl<'a> Rewriter<'a> {
     pub fn new(settings: Settings<'a, '_>) -> Self {
-        let waker = Arc::new(AtomicWaker::new());
-        let done = Arc::new(AtomicBool::default());
-        let queue = Arc::new(ByteQueue::new());
-
-        let sink = RelaySink::new(queue.clone(), waker.clone(), done.clone());
-        Self {
-            queue,
-            waker,
-            done,
-            rewriter: Some(lol_html::HtmlRewriter::new(settings.into_inner(), sink)),
-        }
+        Self::with_context(settings, Context::default())
     }
 
-    pub fn with_queue(
+    pub fn with_context(
         settings: Settings<'a, '_>,
-        queue: Arc<ByteQueue>,
-        waker: Arc<AtomicWaker>,
-        done: Arc<AtomicBool>,
+        context: Context,
     ) -> Self {
-        let sink = RelaySink::new(queue.clone(), waker.clone(), done.clone());
+        let sink = RelaySink::new(context.clone());
         Self {
-            queue,
-            waker,
-            done,
+            context,
             rewriter: Some(lol_html::HtmlRewriter::new(settings.into_inner(), sink)),
         }
     }
 
     pub fn output_reader(&self) -> ByteReader {
-        ByteReader::new(self.queue.clone(), self.waker.clone(), self.done.clone())
-    }
-
-    #[cfg(feature = "hyper")]
-    pub fn output_stream(&self) -> ByteStream {
-        ByteStream::new(self.queue.clone(), self.waker.clone(), self.done.clone())
+        ByteReader::new(self.context.clone())
     }
 
     pub async fn rewrite<S, I>(mut self, stream: &mut S) -> RewriterResult<()>
@@ -92,6 +70,29 @@ impl<'a> Drop for Rewriter<'a> {
         if let Some(rewriter) = self.rewriter.take() {
             let _ = rewriter.end();
         }
+    }
+}
+
+#[cfg(feature = "hyper")]
+impl<'a> Rewriter<'a> {
+    pub fn output_stream(&self) -> FrameStream {
+        FrameStream::new(self.context.clone())
+    }
+
+    pub async fn rewrite_body<S, I>(mut self, stream: &mut S) -> RewriterResult<()>
+    where
+        S: Stream<Item=hyper::Result<I>> + Unpin,
+        I: AsRef<[u8]>,
+    {
+        match &mut self.rewriter {
+            None => unreachable!("The writer should only ever be None when drop has been called"),
+            Some(rewriter) => {
+                while let Some(item) = stream.next().await {
+                    rewriter.write(item?.as_ref())?;
+                }
+            }
+        }
+        Ok(())
     }
 }
 

@@ -1,54 +1,50 @@
 #![cfg(feature = "hyper")]
-use crate::ByteQueue;
-use atomic_waker::AtomicWaker;
+use crate::context::Context;
 use bytes::Bytes;
 use futures_core::{ready, stream::Stream};
 use http_body::{Body, Frame};
-use std::io;
 use std::io::ErrorKind;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::task::{Context, Poll};
+use std::task::Poll;
+use std::{io, task};
 
-pub struct ByteStream {
-    queue: Arc<ByteQueue>,
-    waker: Arc<AtomicWaker>,
-    done: Arc<AtomicBool>,
+#[derive(Debug, Default, Clone)]
+pub struct FrameStream {
+    context: Context,
 }
 
-impl ByteStream {
-    pub fn new(queue: Arc<ByteQueue>, waker: Arc<AtomicWaker>, done: Arc<AtomicBool>) -> Self {
-        Self { queue, waker, done }
+impl FrameStream {
+    pub fn new(context: Context) -> Self {
+        Self { context }
     }
 }
 
-impl Stream for ByteStream {
-    type Item = Result<Frame<Bytes>, io::Error>;
+impl Stream for FrameStream {
+    type Item = io::Result<Frame<Bytes>>;
 
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        if !self.queue.is_empty() {
-            if let Some(bytes) = self.queue.pop() {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<Option<Self::Item>> {
+        if !self.context.queue().is_empty() {
+            if let Some(bytes) = self.context.queue().pop() {
                 let frame = Frame::data(bytes);
                 Poll::Ready(Some(Ok(frame)))
             } else {
                 let err = io::Error::new(ErrorKind::Other, "data queue is empty");
                 Poll::Ready(Some(Err(err)))
             }
-        } else if self.done.load(Ordering::SeqCst) {
+        } else if self.context.is_done() {
             Poll::Ready(None)
         } else {
-            self.waker.register(cx.waker());
+            self.context.register_waker(cx.waker());
             Poll::Pending
         }
     }
 }
 
-impl Body for ByteStream {
+impl Body for FrameStream {
     type Data = Bytes;
     type Error = io::Error;
 
-    fn poll_frame(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+    fn poll_frame(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         match ready!(self.poll_next(cx)) {
             None => Poll::Ready(None),
             Some(frame) => Poll::Ready(Some(frame)),
@@ -58,12 +54,12 @@ impl Body for ByteStream {
 
 #[cfg(test)]
 mod tests {
-    use super::ByteStream;
+    use super::FrameStream;
+    use crate::context::Context;
     use crate::ByteQueue;
     use atomic_waker::AtomicWaker;
     use bytes::Bytes;
     use std::sync::atomic::AtomicBool;
-    use std::sync::Arc;
     use tokio_stream::StreamExt;
 
     #[tokio::test]
@@ -73,11 +69,11 @@ mod tests {
         let queue = ByteQueue::new();
         queue.push(Bytes::from(input));
 
-        let stream = ByteStream::new(
-            Arc::new(queue),
-            Arc::new(AtomicWaker::new()),
-            Arc::new(AtomicBool::new(true)),
-        );
+        let stream = FrameStream::new(Context::new(
+            queue,
+            AtomicWaker::default(),
+            AtomicBool::new(true),
+        ));
 
         let output: Vec<String> = stream
             .map(|frame| frame
