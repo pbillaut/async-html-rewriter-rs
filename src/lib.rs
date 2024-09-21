@@ -4,6 +4,7 @@
 #![deny(clippy::expect_used)]
 #![deny(clippy::missing_assert_message)]
 
+pub mod context;
 pub mod reader;
 pub mod rewriter;
 pub mod settings;
