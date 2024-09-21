@@ -15,21 +15,22 @@ async fn rewrite_html() {
             el.replace(expected, ContentType::Html);
             Ok(())
     })];
-    let source = StreamMockBuilder::new()
+    let mut source = StreamMockBuilder::new()
         .next(b"<h1>Test</h1>")
         .build();
 
     let local_set = task::LocalSet::new();
     let buffer = local_set.run_until(async move {
-        let rewriter = Rewriter::new(source, settings);
+        let rewriter = Rewriter::new(settings);
         let mut stream = rewriter.output_reader();
 
-        let rewriter_handle = task::spawn_local(rewriter);
+        task::spawn_local(async move {
+            let result = rewriter.rewrite(&mut source).await;
+            assert!(result.is_ok(), "Expected rewrite operation to succeed: {:?}", result);
+        });
 
         let mut buf = String::new();
         stream.read_to_string(&mut buf).await.unwrap();
-
-        let _ = rewriter_handle.await.unwrap();
         buf
     }).await;
 

@@ -9,12 +9,14 @@ use tokio::runtime::Runtime;
 use tokio::task;
 use tokio_test::stream_mock::{StreamMock, StreamMockBuilder};
 
-async fn rewrite(source: StreamMock<Vec<u8>>, settings: Settings<'static, 'static>) {
+async fn rewrite(mut source: StreamMock<Vec<u8>>, settings: Settings<'static, 'static>) {
     let local_set = task::LocalSet::new();
     local_set.run_until(async move {
-        let rewriter = Rewriter::new(source, settings);
+        let rewriter = Rewriter::new(settings);
         let mut stream = rewriter.output_reader();
-        let rewriter_handle = task::spawn_local(rewriter);
+        let rewriter_handle = task::spawn_local(async move {
+            rewriter.rewrite(&mut source).await
+        });
         let mut buf = String::new();
         stream.read_to_string(&mut buf).await.unwrap();
         let _ = rewriter_handle.await.unwrap();

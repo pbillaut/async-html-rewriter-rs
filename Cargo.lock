@@ -64,6 +64,7 @@ dependencies = [
  "hyper",
  "lol_html",
  "pin-project-lite",
+ "thiserror",
  "tokio",
  "tokio-stream",
  "tokio-test",
