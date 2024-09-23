@@ -15,7 +15,7 @@ async fn rewrite(mut source: StreamMock<Vec<u8>>, settings: Settings<'static, 's
         let rewriter = Rewriter::new(settings);
         let mut stream = rewriter.output_reader();
         let rewriter_handle = task::spawn_local(async move {
-            rewriter.rewrite(&mut source).await
+            rewriter.rewrite_stream(&mut source).await
         });
         let mut buf = String::new();
         stream.read_to_string(&mut buf).await.unwrap();
@@ -35,7 +35,7 @@ fn bench_throughput(c: &mut Criterion) {
                 let mut settings = Settings::new();
                 settings.element_content_handlers = vec![
                     element!("h1", |el| {
-                            el.replace("<h1>Benchmark</h1>", ContentType::Html);
+                            el.replace("<h1>Benchmark Finished</h1>", ContentType::Html);
                             Ok(())
                         })
                 ];
