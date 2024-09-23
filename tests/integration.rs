@@ -25,7 +25,7 @@ async fn rewrite_html() {
         let mut stream = rewriter.output_reader();
 
         task::spawn_local(async move {
-            let result = rewriter.rewrite(&mut source).await;
+            let result = rewriter.rewrite_stream(&mut source).await;
             assert!(result.is_ok(), "Expected rewrite operation to succeed: {:?}", result);
         });
 

@@ -2,6 +2,7 @@ use std::ops::{Deref, DerefMut};
 
 pub struct Settings<'h, 's> {
     settings: lol_html::Settings<'h, 's>,
+    pub reader_buf_size: usize,
 }
 
 impl<'h, 's> Default for Settings<'h, 's> {
@@ -12,7 +13,10 @@ impl<'h, 's> Default for Settings<'h, 's> {
 
 impl<'h, 's> Settings<'h, 's> {
     pub fn new() -> Self {
-        Self { settings: lol_html::Settings::default() }
+        Self {
+            settings: lol_html::Settings::default(),
+            reader_buf_size: 4096,
+        }
     }
 
     pub fn into_inner(self) -> lol_html::Settings<'h, 's> {

@@ -4,19 +4,25 @@ use crate::settings::Settings;
 use crate::sink::RelaySink;
 #[cfg(feature = "hyper")]
 use crate::stream::FrameStream;
+use bytes::BytesMut;
 use futures_core::Stream;
 use std::fmt::Debug;
 use thiserror::Error;
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio_stream::StreamExt;
 
 #[derive(Error, Debug)]
 pub enum RewriterError {
-    #[error("rewriting error: {0}")]
-    RewritingError(#[from] lol_html::errors::RewritingError),
+    #[error(transparent)]
+    Rewriter(#[from] lol_html::errors::RewritingError),
+
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
 
     #[cfg(feature = "hyper")]
-    #[error("hyper error: {0}")]
-    HyperError(#[from] hyper::Error),
+    #[error(transparent)]
+    Hyper(#[from] hyper::Error),
+
 }
 
 pub type RewriterResult<T> = Result<T, RewriterError>;
@@ -24,7 +30,8 @@ pub type RewriterResult<T> = Result<T, RewriterError>;
 #[derive(Debug)]
 pub struct Rewriter<'a> {
     context: Context,
-    rewriter: Option<lol_html::HtmlRewriter<'a, RelaySink>>,
+    rewriter: lol_html::HtmlRewriter<'a, RelaySink>,
+    reader_buf_size: usize,
 }
 
 impl<'a> Rewriter<'a> {
@@ -39,7 +46,8 @@ impl<'a> Rewriter<'a> {
         let sink = RelaySink::new(context.clone());
         Self {
             context,
-            rewriter: Some(lol_html::HtmlRewriter::new(settings.into_inner(), sink)),
+            reader_buf_size: settings.reader_buf_size,
+            rewriter: lol_html::HtmlRewriter::new(settings.into_inner(), sink),
         }
     }
 
@@ -47,29 +55,31 @@ impl<'a> Rewriter<'a> {
         ByteReader::new(self.context.clone())
     }
 
-    pub async fn rewrite<S, I>(mut self, stream: &mut S) -> RewriterResult<()>
+    pub async fn rewrite_stream<S, I>(mut self, stream: &mut S) -> RewriterResult<()>
     where
         S: Stream<Item=I> + Unpin,
         I: AsRef<[u8]>,
     {
-        match &mut self.rewriter {
-            None => unreachable!("The writer should only ever be None when drop has been called"),
-            Some(rewriter) => {
-                while let Some(item) = stream.next().await {
-                    rewriter.write(item.as_ref())?
-                }
-            }
+        while let Some(item) = stream.next().await {
+            self.rewriter.write(item.as_ref())?;
         }
+        self.rewriter.end()?;
         Ok(())
     }
-}
 
-impl<'a> Drop for Rewriter<'a> {
-    fn drop(&mut self) {
-        // Best effort to close the inner rewriter
-        if let Some(rewriter) = self.rewriter.take() {
-            let _ = rewriter.end();
+    pub async fn rewrite_reader<R>(mut self, reader: &mut R) -> RewriterResult<()>
+    where
+        R: AsyncRead + Unpin,
+    {
+        let mut buffer = BytesMut::zeroed(self.reader_buf_size);
+        loop {
+            match reader.read(&mut buffer[..]).await? {
+                0 => break,
+                n => self.rewriter.write(&buffer[..n])?,
+            }
         }
+        self.rewriter.end()?;
+        Ok(())
     }
 }
 
@@ -84,14 +94,10 @@ impl<'a> Rewriter<'a> {
         S: Stream<Item=hyper::Result<I>> + Unpin,
         I: AsRef<[u8]>,
     {
-        match &mut self.rewriter {
-            None => unreachable!("The writer should only ever be None when drop has been called"),
-            Some(rewriter) => {
-                while let Some(item) = stream.next().await {
-                    rewriter.write(item?.as_ref())?;
-                }
-            }
+        while let Some(item) = stream.next().await {
+            self.rewriter.write(item?.as_ref())?;
         }
+        self.rewriter.end()?;
         Ok(())
     }
 }
@@ -106,7 +112,7 @@ mod tests {
     use tokio_test::stream_mock::StreamMockBuilder;
 
     #[tokio::test]
-    async fn rewrite_html() {
+    async fn rewrite_stream() {
         let expected = "<h1>Succeeded</h1>";
         let mut source = StreamMockBuilder::new()
             .next(b"<h1>Test</h1>")
@@ -120,7 +126,7 @@ mod tests {
 
         let rewriter = Rewriter::new(settings);
         let mut reader = rewriter.output_reader();
-        let result = rewriter.rewrite(&mut source).await;
+        let result = rewriter.rewrite_stream(&mut source).await;
         assert!(result.is_ok(), "Expected rewriting to succeed: {:?}", result);
 
         let mut output = String::new();
